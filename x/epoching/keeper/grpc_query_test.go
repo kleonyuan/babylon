@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"cosmossdk.io/core/header"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 
 	"github.com/cosmos/cosmos-sdk/types/query"
@@ -228,4 +229,55 @@ func FuzzEpochValSetQuery(f *testing.F) {
 			require.Equal(t, resp.Validators[i].Addr, resp2.Validators[i].Addr)
 		}
 	})
+}
+
+func TestEpochValSetQueryUsesRequestedEpoch(t *testing.T) {
+	genesisValSet, privSigner, err := datagen.GenesisValidatorSetWithPrivSigner(1)
+	require.NoError(t, err)
+	helper := testhelper.NewHelperWithValSet(t, genesisValSet, privSigner)
+	ctx, queryClient := helper.Ctx, helper.QueryClient
+	keeper := helper.App.EpochingKeeper
+
+	params := keeper.GetParams(ctx)
+	for i := uint64(0); i < params.EpochInterval; i++ {
+		ctx, err = helper.ApplyEmptyBlockWithVoteExtension(rand.New(rand.NewSource(int64(i))))
+		require.NoError(t, err)
+	}
+	require.Equal(t, uint64(2), keeper.GetEpoch(ctx).EpochNumber)
+
+	// Replace the stored sets with distinct values so querying epoch 1 while
+	// epoch 2 is current verifies both the validator list and total power.
+	keeper.ClearValidatorSet(ctx, 1)
+	keeper.ClearValidatorSet(ctx, 2)
+	oldValidatorA := sdk.ValAddress("epoch-1-validator-a")
+	oldValidatorB := sdk.ValAddress("epoch-1-validator-b")
+	currentValidator := sdk.ValAddress("epoch-2-validator")
+	require.NoError(t, keeper.InitGenValidatorSet(ctx, []*types.EpochValidatorSet{
+		{
+			EpochNumber: 1,
+			Validators: []*types.Validator{
+				{Addr: oldValidatorA, Power: 100},
+				{Addr: oldValidatorB, Power: 200},
+			},
+		},
+		{
+			EpochNumber: 2,
+			Validators: []*types.Validator{
+				{Addr: currentValidator, Power: 350},
+			},
+		},
+	}))
+
+	resp, err := queryClient.EpochValSet(ctx, &types.QueryEpochValSetRequest{EpochNum: 1})
+	require.NoError(t, err)
+	require.Equal(t, int64(300), resp.TotalVotingPower)
+	require.Len(t, resp.Validators, 2)
+	require.ElementsMatch(t, []sdk.ValAddress{oldValidatorA, oldValidatorB}, []sdk.ValAddress{
+		sdk.ValAddress(resp.Validators[0].Addr),
+		sdk.ValAddress(resp.Validators[1].Addr),
+	})
+
+	// Epoch 0 has metadata but no stored validator set or voting power.
+	_, err = keeper.EpochValSet(ctx, &types.QueryEpochValSetRequest{EpochNum: 0})
+	require.ErrorIs(t, err, types.ErrUnknownTotalVotingPower)
 }

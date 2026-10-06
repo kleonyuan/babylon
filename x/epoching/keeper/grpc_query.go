@@ -215,10 +215,14 @@ func (k Keeper) EpochValSet(c context.Context, req *types.QueryEpochValSetReques
 		return nil, types.ErrUnknownEpochNumber
 	}
 
-	totalVotingPower := k.GetTotalVotingPower(ctx, epoch.EpochNumber)
+	if k.votingPowerStore(ctx).Get(sdk.Uint64ToBigEndian(req.EpochNum)) == nil {
+		return nil, types.ErrUnknownTotalVotingPower
+	}
+
+	totalVotingPower := k.GetTotalVotingPower(ctx, req.EpochNum)
 
 	vals := []*types.Validator{}
-	epochValSetStore := k.valSetStore(ctx, epoch.EpochNumber)
+	epochValSetStore := k.valSetStore(ctx, req.EpochNum)
 	pageRes, err := query.Paginate(epochValSetStore, req.Pagination, func(key, value []byte) error {
 		// Here key is the validator's ValAddress, and value is the voting power
 		var power math.Int
